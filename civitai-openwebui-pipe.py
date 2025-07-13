@@ -111,7 +111,7 @@ class Pipe:
             description="Maximum time to wait for the image generation job to complete.",
         )
         USE_B64: bool = Field(
-            default=False,
+            default=True,
             description="If enabled, encodes the image to Base64 and embeds it directly in the chat. If disabled, uses the direct image URL.",
         )
 
@@ -180,7 +180,7 @@ class Pipe:
             # 3. Prepare Civitai Payload
             try:
                 additional_networks = ast.literal_eval(
-                    self.valves.ADDITIONAL_NETWORKS_JSON
+                    self.valves.ADDITIONAL_NETWORKS_JSON.strip()
                 )
             except json.JSONDecodeError:
                 yield "Error: Invalid JSON format for 'Additional Networks'."
