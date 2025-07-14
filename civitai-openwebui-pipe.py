@@ -1,8 +1,8 @@
 """
-title: Civitai Image Generation Pipe
+title: CivitAI Image Generation Pipe
 author: Your Name (inspired by examples)
 description: >-
-  Generates images using the Civitai.com API and displays them in the chat.
+  Generates images using the CivitAI.com API and displays them in the chat.
   This pipe allows for specifying a model, negative prompts, and additional networks like LoRAs.
 version: 1.0.0
 license: MIT
@@ -10,8 +10,6 @@ requirements: civitai-py, httpx, requests, pyyaml
 environment_variables:
   - CIVITAI_API_TOKEN
 """
-
-# TODO: add support for non streaming responses
 
 import time
 import copy
@@ -40,8 +38,8 @@ GENERATION_PARAMS_DEFAULTS = {
     "scheduler": "EulerA",
     "steps": 25,
     "cfgScale": 4,
-    "width": 100000,
-    "height": 100000,
+    "width": 1024,
+    "height": 1024,
     "seed": None,
     "clipSkip": 2,
 }
@@ -125,7 +123,6 @@ def parse_seed(seed: str) -> int:
     return int(seed)
 
 
-# TODO:
 def civitai_url_to_urn(url: str) -> str:
     model_id = url.split("/models/")[1].split("/")[0]
     model_version_id = (
@@ -144,13 +141,13 @@ def civitai_url_to_urn(url: str) -> str:
 
 def civitai_urn_to_url(urn: str) -> str:
     """
-    Converts a Civitai URN to a web URL.
+    Converts a CivitAI URN to a web URL.
 
     Args:
-        urn: Civitai URN in format like "urn:air:sdxl:lora:civitai:212532@239420"
+        urn: CivitAI URN in format like "urn:air:sdxl:lora:civitai:212532@239420"
 
     Returns:
-        str: The corresponding Civitai web URL
+        str: The corresponding CivitAI web URL
 
     Example:
         >>> civitai_urn_to_url("urn:air:sdxl:lora:civitai:212532@239420")
@@ -162,7 +159,7 @@ def civitai_urn_to_url(urn: str) -> str:
     # Split URN parts: urn:air:sdxl:lora:civitai:212532@239420
     parts = urn.split(":")
     if len(parts) < 6 or parts[4] != "civitai":
-        raise ValueError(f"Invalid Civitai URN format: {urn}")
+        raise ValueError(f"Invalid CivitAI URN format: {urn}")
 
     # Extract model ID and version ID from the last part
     model_part = parts[5]  # "212532@239420"
@@ -246,7 +243,7 @@ def parse_prompt_components(user_input):
 
 def parse_generation_data(input_string: str) -> Dict[str, Any]:
     """
-    Parse a Civitai prompt block into its logical components using regex.
+    Parse a CivitAI prompt block into its logical components using regex.
 
     Args:
         input_string (str): The input prompt string containing prompt, negative prompt and metadata
@@ -315,7 +312,13 @@ def parse_inputstring_to_generation_input(input_string: str) -> dict:
     generation_data = parse_generation_data(input_string)
     print(f"generation_data={json.dumps(generation_data, indent=4)}")
 
-    # generation_data = parse_generation_data(prompt)
+    # Validate model is in URN format
+    model = generation_data["other_metadata"].get("model", DEFAULT_MODEL)
+    if not model.startswith("urn:"):
+        raise ValueError(
+            f"Model must be in URN format (starting with 'urn:'), got: {model}"
+        )
+
     METADATA_WHITELIST = [
         "prompt",
         "negativePrompt",
@@ -324,6 +327,7 @@ def parse_inputstring_to_generation_input(input_string: str) -> dict:
         "scheduler",
         "steps",
         "cfgScale",
+        "quantity",
         "seed",
         "clipSkip",
     ]
@@ -347,7 +351,7 @@ try:
 except Exception as e:
     print("")
 
-# Set the Civitai API token from environment variables
+# Set the CivitAI API token from environment variables
 # Ensure you have CIVITAI_API_TOKEN set in your .env file for OpenWebUI
 if "CIVITAI_API_TOKEN" in os.environ:
     civitai.api_key = os.environ["CIVITAI_API_TOKEN"]
@@ -355,26 +359,34 @@ if "CIVITAI_API_TOKEN" in os.environ:
 
 class Pipe:
     """
-    A pipe for generating images using the Civitai API.
+    A pipe for generating images using the CivitAI API.
     """
 
     class Valves(BaseModel):
         """
-        Configuration settings for the Civitai pipe, managed through the OpenWebUI settings interface.
+        Configuration settings for the CivitAI pipe, managed through the OpenWebUI settings interface.
         """
 
         CIVITAI_API_TOKEN: str = Field(
             default="",
-            description="Your Civitai API Key. It's recommended to set this via environment variables.",
+            description="Your CivitAI API Key. It's recommended to set this via environment variables.",
         )
         USE_B64: bool = Field(
             default=True,
             description="If enabled, encodes the image to Base64 and embeds it directly in the chat. If disabled, uses the direct image URL. Note that the image may disappear later from the chat if you disable this.",
         )
+        POLLING_TIMEOUT: int = Field(
+            default=120,
+            description="The timeout for the polling job in seconds.",
+        )
+        POLLING_INTERVAL: int = Field(
+            default=1,
+            description="The interval for the polling job in seconds.",
+        )
 
     def __init__(self):
         self.id = "civitai_image_generator"
-        self.name = "Civitai Image Generator"
+        self.name = "CivitAI Image Generator"
         self.valves = self.Valves()
         self.emitter = None
 
@@ -405,6 +417,15 @@ class Pipe:
                 }
             )
 
+    def pipes(self) -> List[Dict[str, str]]:
+        """
+        Get the list of available pipes.
+
+        Returns:
+            List[Dict[str, str]]: The list of pipes.
+        """
+        return [{"id": "civitai_image_generator", "name": "CivitAI Image Generator"}]
+
     async def pipe(
         self,
         body: dict,
@@ -412,7 +433,7 @@ class Pipe:
     ) -> AsyncGenerator[str, None]:
         """
         The main execution method for the pipe. It receives the request body,
-        generates an image via Civitai, and streams the result back.
+        generates an image via CivitAI, and streams the result back.
         """
         self.emitter = __event_emitter__
 
@@ -433,21 +454,23 @@ class Pipe:
                 await self._emit_status("Error: No prompt found.", done=True)
                 return
 
-            yield f'🎨 Starting image generation for prompt: "{user_prompt}"\n\n'
             generation_input = parse_inputstring_to_generation_input(user_prompt)
-            print(f"generation_input={json.dumps(generation_input, indent=4)}")
+            yield f"🎨 Starting image generation for prompt:\n<details>\n<summary>View Generation Parameters</summary>\n\n```json\n{json.dumps(generation_input, indent=4, sort_keys=True, ensure_ascii=False)}\n```\n</details>\n"
 
-            yield f"""```yaml
-# generation input
-{yaml.dump(generation_input)}
-```
-"""
+            # 4. Submit Job to CivitAI
+            await self._emit_status("Submitting job to CivitAI...")
+            # yield f"generation_input\n```json\n{json.dumps(generation_input, indent=4)}\n```\n"
+            if generation_input["params"]["width"] > 1024:
+                warning_message = f"\n\n⚠️ Warning: Width {generation_input['params']['width']} is too large. Please set it to 1024 or less. Setting to 1024.\n\n"
+                await self._emit_status(warning_message)
+                yield warning_message
+                generation_input["params"]["width"] = 1024
+            if generation_input["params"]["height"] > 1024:
+                warning_message = f"\n\n⚠️ Warning: Height {generation_input['params']['height']} is too large. Please set it to 1024 or less. Setting to 1024.\n\n"
+                await self._emit_status(warning_message)
+                yield warning_message
+                generation_input["params"]["height"] = 1024
 
-            # 4. Submit Job to Civitai
-            await self._emit_status("Submitting job to Civitai...")
-            yield "generation_input=" + json.dumps(generation_input, indent=4)
-            with open(__file__ + "-generation_input.json", "w") as f:
-                json.dump(generation_input, f, indent=4)
             response = await civitai.image.create(generation_input, wait=False)
             job_token = response["token"]
             job_id = response["jobs"][0]["jobId"]
@@ -457,23 +480,21 @@ class Pipe:
 
             job_status = await civitai.jobs.get(token=job_token, job_id=job_id)
             image_info = job_status["jobs"][0].get("result", [{}])[0]
-            # Polling timeout and retry logic
-            POLLING_TIMEOUT = 120  # seconds
-            POLLING_INTERVAL = 2  # seconds
-            start_time = time.time()
 
+            # Polling timeout and retry logic
+            start_time = time.time()
             while not image_info.get("available"):
                 elapsed_time = time.time() - start_time
-                if elapsed_time >= POLLING_TIMEOUT:
-                    yield f"Error: Job timed out after {POLLING_TIMEOUT} seconds."
+                if elapsed_time >= self.valves.POLLING_TIMEOUT:
+                    yield f"Error: Job timed out after {self.valves.POLLING_TIMEOUT} seconds."
                     await self._emit_status("Error: Job timed out.", done=True)
                     return
 
-                await asyncio.sleep(POLLING_INTERVAL)
+                await asyncio.sleep(self.valves.POLLING_INTERVAL)
                 job_status = await civitai.jobs.get(token=job_token, job_id=job_id)
                 image_info = job_status["jobs"][0].get("result", [{}])[0]
 
-                remaining_time = POLLING_TIMEOUT - elapsed_time
+                remaining_time = self.valves.POLLING_TIMEOUT - elapsed_time
                 await self._emit_status(
                     f"Job still processing... (timeout in {remaining_time:.0f}s)"
                 )
@@ -504,10 +525,10 @@ class Pipe:
             return  # Success, exit the loop
 
         except Exception as e:
-            error_message = f"An unexpected error occurred: {str(e)}"
+            error_message = f"🚨 An unexpected error occurred: {str(e)}"
             stack_trace = traceback.format_exc()
-            print(f"Error in Civitai Pipe: {error_message}\n{stack_trace}")
-            yield f"{error_message}\n\n```\n{stack_trace}\n```"
+            print(f"Error in CivitAI Pipe: {error_message}\n{stack_trace}")
+            yield f"{error_message}\n\n```\n{stack_trace}\n```\n"
             await self._emit_status(f"Error: {str(e)}", done=True)
 
 
@@ -521,121 +542,123 @@ In bedroom, frat house BREAK on bed,
 By night, pajamas down, anus, pussy, (puffy labia:1.4), beautiful woman, intimate photo, realistic image, dim light, cozy atmosphere, perfect lighting, perfect shadows, shiny skin, perfect reflections, lots of shadows
 Negative prompt: easynegative, badhandv4, (worst quality, low quality, normal quality), bad-artist, blurry, ugly, ((bad anatomy)),((bad hands)),((bad proportions)),((duplicate limbs)),((fused limbs)),((interlocking fingers)),((poorly drawn face)), signature, watermark, artist logo, patreon logo
 Additional networks: urn:air:sd1:embedding:civitai:7808@9208*1.0!easynegative, urn:air:sdxl:lora:civitai:1115064@1253021*3.3, urn:air:sdxl:lora:civitai:212532@239420*1.0, urn:air:sdxl:lora:civitai:341353@382152*0.8, urn:air:sdxl:lora:civitai:888231@398847*0.45, urn:air:sdxl:lora:civitai:300005@436219*0.25
-Steps: 25, CFG scale: 4, Sampler: Euler a, Seed: 1594260453, process: txt2img, workflow: txt2img, Size: 1024x1024, draft: false, width: 1024, height: 1024, quantity: 1, baseModel: Illustrious, disablePoi: true, aspectRatio: 1:1, Created Date: 2025-07-05T1255:24.7399976Z, experimental: false, Clip skip: 2, Model: urn:air:sdxl:checkpoint:civitai:257749@290640
+Steps: 25, CFG scale: 4, Sampler: Euler a, Seed: 1594260453, process: txt2img, workflow: txt2img, Size: 1024x1024, draft: false, width: 1024, height: 1024, quantity: 4, baseModel: Illustrious, disablePoi: true, aspectRatio: 1:1, Created Date: 2025-07-05T1255:24.7399976Z, experimental: false, Clip skip: 2, Model: urn:air:sdxl:checkpoint:civitai:257749@290640
 """
     pipe = Pipe()
     generator = pipe.pipe(dict(messages=[{"role": "user", "content": xyz}]))
-    with open(__file__ + "-output.md", "w") as f:
+    with open(__file__ + "-output.md", "w") as mainfile:
         async for chunk in generator:
-            f.write(chunk)
+            mainfile.write(chunk)
 
-    generation_input = parse_inputstring_to_generation_input(xyz)
-    with open(__file__ + "-generation_input.json", "w") as f:
-        json.dump(generation_input, f, indent=4)
+        generation_input = parse_inputstring_to_generation_input(xyz)
+        with open(__file__ + "-generation_input.json", "w") as f:
+            json.dump(generation_input, f, indent=4)
 
-    import deepdiff
+        import deepdiff
 
-    GT = {
-        "model": "urn:air:sdxl:checkpoint:civitai:257749@290640",
-        "params": {
-            "negativePrompt": "easynegative, badhandv4, (worst quality, low quality, normal quality), bad-artist, blurry, ugly, ((bad anatomy)),((bad hands)),((bad proportions)),((duplicate limbs)),((fused limbs)),((interlocking fingers)),((poorly drawn face)), signature, watermark, artist logo, patreon logo",
-            "scheduler": "EulerA",
-            "steps": 25,
-            "cfgScale": 4,
-            "width": 1024,
-            "height": 1024,
-            "seed": 1594260453,
-            "clipSkip": 2,
-            "prompt": "score_9,score_8_up,score_7_up,\n1 tanned curvy italian girl, hot girl, round face, thin nose, long hair, hair in pigtails , brown hair, (oversized huge breasts), sexy face, narrow face, makeup,\nCute pajamas top , pajamas top\npulled over midriff , lifting shirt, pierced belly button , close up view, on knees, knees spread wide, all fours, ass up, round ass,\nIn bedroom, frat house BREAK on bed,\nBy night, pajamas down, anus, pussy, (puffy labia:1.4), beautiful woman, intimate photo, realistic image, dim light, cozy atmosphere, perfect lighting, perfect shadows, shiny skin, perfect reflections, lots of shadows",
-        },
-        "additionalNetworks": {
-            "urn:air:sd1:embedding:civitai:7808@9208": {
-                "type": "TextualInversion",
-                "strength": 1.0,
-                "triggerWord": "easynegative",
+        expected_generation_input = {
+            "model": "urn:air:sdxl:checkpoint:civitai:257749@290640",
+            "params": {
+                "negativePrompt": "easynegative, badhandv4, (worst quality, low quality, normal quality), bad-artist, blurry, ugly, ((bad anatomy)),((bad hands)),((bad proportions)),((duplicate limbs)),((fused limbs)),((interlocking fingers)),((poorly drawn face)), signature, watermark, artist logo, patreon logo",
+                "scheduler": "EulerA",
+                "steps": 25,
+                "cfgScale": 4,
+                "width": 1024,
+                "height": 1024,
+                "seed": 1594260453,
+                "clipSkip": 2,
+                "prompt": "score_9,score_8_up,score_7_up,\n1 tanned curvy italian girl, hot girl, round face, thin nose, long hair, hair in pigtails , brown hair, (oversized huge breasts), sexy face, narrow face, makeup,\nCute pajamas top , pajamas top\npulled over midriff , lifting shirt, pierced belly button , close up view, on knees, knees spread wide, all fours, ass up, round ass,\nIn bedroom, frat house BREAK on bed,\nBy night, pajamas down, anus, pussy, (puffy labia:1.4), beautiful woman, intimate photo, realistic image, dim light, cozy atmosphere, perfect lighting, perfect shadows, shiny skin, perfect reflections, lots of shadows",
             },
-            "urn:air:sdxl:lora:civitai:1115064@1253021": {
-                "type": "Lora",
-                "strength": 3.3,
+            "additionalNetworks": {
+                "urn:air:sd1:embedding:civitai:7808@9208": {
+                    "type": "TextualInversion",
+                    "strength": 1.0,
+                    "triggerWord": "easynegative",
+                },
+                "urn:air:sdxl:lora:civitai:1115064@1253021": {
+                    "type": "Lora",
+                    "strength": 3.3,
+                },
+                "urn:air:sdxl:lora:civitai:212532@239420": {
+                    "type": "Lora",
+                    "strength": 1.0,
+                },
+                "urn:air:sdxl:lora:civitai:341353@382152": {
+                    "type": "Lora",
+                    "strength": 0.8,
+                },
+                "urn:air:sdxl:lora:civitai:888231@398847": {
+                    "type": "Lora",
+                    "strength": 0.45,
+                },
+                "urn:air:sdxl:lora:civitai:300005@436219": {
+                    "type": "Lora",
+                    "strength": 0.25,
+                },
             },
-            "urn:air:sdxl:lora:civitai:212532@239420": {
-                "type": "Lora",
-                "strength": 1.0,
-            },
-            "urn:air:sdxl:lora:civitai:341353@382152": {
-                "type": "Lora",
-                "strength": 0.8,
-            },
-            "urn:air:sdxl:lora:civitai:888231@398847": {
-                "type": "Lora",
-                "strength": 0.45,
-            },
-            "urn:air:sdxl:lora:civitai:300005@436219": {
-                "type": "Lora",
-                "strength": 0.25,
-            },
-        },
-    }
-    diff = deepdiff.DeepDiff(generation_input, GT)
-    assert (
-        not diff
-    ), f"generation_input: {json.dumps(generation_input, indent=4)}\nGT: {json.dumps(GT, indent=4)}\ndiff: {json.dumps(diff, indent=4)}"
+        }
+        diff = deepdiff.DeepDiff(generation_input, expected_generation_input)
+        assert (
+            not diff
+        ), f"generation_input: {json.dumps(generation_input, indent=4)}\nGT: {json.dumps(GT, indent=4)}\ndiff: {json.dumps(diff, indent=4)}"
 
-    # ================ test cases ================
+        # ================ test cases ================
 
-    prompt = """
-    score_9,score_8_up,score_7_up,
-    1 tanned curvy italian girl, hot girl, round face, thin nose, long hair, hair in pigtails , brown hair, (oversized huge breasts), sexy face, narrow face, makeup,
-    Cute pajamas top , pajamas top
-    pulled over midriff , lifting shirt, pierced belly button , close up view, on knees, knees spread wide, all fours, ass up, round ass,
-    In bedroom, frat house BREAK on bed, smiling with puffy pussy, crying
-    By night, pajamas down, anus, pussy, (puffy labia:1.4), beautiful woman, intimate photo, realistic image, dim light, cozy atmosphere, perfect lighting, perfect shadows, shiny skin, perfect reflections, lots of shadows
-    """.strip()
-    negativePrompt = """
-    Negative prompt: easynegative, badhandv4, (worst quality, low quality, normal quality), bad-artist, blurry, ugly, ((bad anatomy)),((bad hands)),((bad proportions)),((duplicate limbs)),((fused limbs)),((interlocking fingers)),((poorly drawn face)), signature, watermark, artist logo, patreon logo
-    """.strip()
-    additionalNetworks = """
-    Additional networks: urn:air:sd1:embedding:civitai:7808@9208*1.0!easynegative, urn:air:sdxl:lora:civitai:1115064@1253021*3.3, urn:air:sdxl:lora:civitai:212532@239420*1.0, urn:air:sdxl:lora:civitai:341353@382152*0.8, urn:air:sdxl:lora:civitai:888231@398847*0.45, urn:air:sdxl:lora:civitai:300005@436219*0.25
-    """.strip()
-    other_metadata = """
-    Steps: 25, CFG scale: 4, Sampler: Euler a, Seed: 1594260453, process: txt2img, workflow: txt2img, Size: 1024x1024, draft: false, width: 1024, height: 1024, quantity: 1, baseModel: Illustrious, disablePoi: true, aspectRatio: 1:1, Created Date: 2025-07-05T1255:24.7399976Z, experimental: false, Clip skip: 2, Model: urn:air:sdxl:checkpoint:civitai:257749@290640
-    """.strip()
-    o = {
-        "prompt": prompt,
-        "negativePrompt": negativePrompt,
-        "additionalNetworks": additionalNetworks,
-        "other_metadata": other_metadata,
-    }
+        prompt = """
+        score_9,score_8_up,score_7_up,
+        1 tanned curvy italian girl, hot girl, round face, thin nose, long hair, hair in pigtails , brown hair, (oversized huge breasts), sexy face, narrow face, makeup,
+        Cute pajamas top , pajamas top
+        pulled over midriff , lifting shirt, pierced belly button , close up view, on knees, knees spread wide, all fours, ass up, round ass,
+        In bedroom, frat house BREAK on bed, smiling with puffy pussy, crying
+        By night, pajamas down, anus, pussy, (puffy labia:1.4), beautiful woman, intimate photo, realistic image, dim light, cozy atmosphere, perfect lighting, perfect shadows, shiny skin, perfect reflections, lots of shadows
+        """.strip()
+        negativePrompt = """
+        Negative prompt: easynegative, badhandv4, (worst quality, low quality, normal quality), bad-artist, blurry, ugly, ((bad anatomy)),((bad hands)),((bad proportions)),((duplicate limbs)),((fused limbs)),((interlocking fingers)),((poorly drawn face)), signature, watermark, artist logo, patreon logo
+        """.strip()
+        additionalNetworks = """
+        Additional networks: urn:air:sd1:embedding:civitai:7808@9208*1.0!easynegative, urn:air:sdxl:lora:civitai:1115064@1253021*3.3, urn:air:sdxl:lora:civitai:212532@239420*1.0, urn:air:sdxl:lora:civitai:341353@382152*0.8, urn:air:sdxl:lora:civitai:888231@398847*0.45, urn:air:sdxl:lora:civitai:300005@436219*0.25
+        """.strip()
+        other_metadata = """
+        Steps: 25, CFG scale: 4, Sampler: Euler a, Seed: 1594260453, process: txt2img, workflow: txt2img, Size: 1024x1024, draft: false, width: 1024, height: 1024, quantity: 4, baseModel: Illustrious, disablePoi: true, aspectRatio: 1:1, Created Date: 2025-07-05T1255:24.7399976Z, experimental: false, Clip skip: 2, Model: urn:air:sdxl:checkpoint:civitai:257749@290640
+        """.strip()
+        o = {
+            "prompt": prompt,
+            "negativePrompt": negativePrompt,
+            "additionalNetworks": additionalNetworks,
+            "other_metadata": other_metadata,
+        }
 
-    from itertools import combinations
+        from itertools import combinations
 
-    # Generate all possible combinations and permutations
-    all_keys = ["negativePrompt", "additionalNetworks", "other_metadata"]
-    combination_keys = []
+        # Generate all possible combinations and permutations
+        all_keys = ["negativePrompt", "additionalNetworks", "other_metadata"]
+        combination_keys = []
 
-    # Generate all combinations of different lengths (1 to 4 elements)
-    for r in range(1, len(all_keys) + 1):
-        for combo in combinations(all_keys, r):
-            # For each combination, generate all permutations
-            from itertools import permutations
+        # Generate all combinations of different lengths (1 to 4 elements)
+        for r in range(1, len(all_keys) + 1):
+            for combo in combinations(all_keys, r):
+                # For each combination, generate all permutations
+                from itertools import permutations
 
-            for perm in permutations(combo):
-                combination_keys.append(["prompt"] + list(perm))
-    print(f"combination_keys={json.dumps(combination_keys, indent=4)}")
+                for perm in permutations(combo):
+                    combination_keys.append(["prompt"] + list(perm))
 
-    for input_names in combination_keys:
-        inputs = [o[name] for name in input_names]
-        generation_data_str = "\n".join(inputs)
-        generation_data = parse_generation_data(generation_data_str)
-        for key in input_names:
-            assert key in generation_data, f"{key} not in {generation_data.keys()}"
+        print(f"combination_keys={json.dumps(combination_keys, indent=4)}")
 
-        pipe = Pipe()
-        generator = pipe.pipe(
-            dict(messages=[{"role": "user", "content": generation_data_str}])
-        )
-        async for chunk in generator:
-            print(f"{chunk}", end="")
+        for input_names in combination_keys:
+            inputs = [o[name] for name in input_names]
+            generation_data_str = "\n".join(inputs)
+            generation_data = parse_generation_data(generation_data_str)
+            for key in input_names:
+                assert key in generation_data, f"{key} not in {generation_data.keys()}"
+
+            pipe = Pipe()
+            generator = pipe.pipe(
+                dict(messages=[{"role": "user", "content": generation_data_str}])
+            )
+            mainfile.write(f"# {input_names}\n")
+            async for chunk in generator:
+                mainfile.write(chunk)
 
 
 if __name__ == "__main__":
